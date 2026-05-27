@@ -1,4 +1,5 @@
-import { ConvexProvider, ConvexReactClient } from 'convex/react'
+import { ConvexReactClient } from 'convex/react'
+import { ConvexAuthProvider } from '@convex-dev/auth/react'
 import { hasConvexUrl } from '../convex/api'
 import { AuthProvider } from './AuthContext.jsx'
 import { TaskProvider } from './TaskContext.jsx'
@@ -24,7 +25,10 @@ export function AppProviders({ children }) {
     </ThemeProvider>
   )
 
-  if (!convex) return app
+  // When Convex is available, wrap with ConvexAuthProvider (handles auth state)
+  if (convex) {
+    return <ConvexAuthProvider client={convex}>{app}</ConvexAuthProvider>
+  }
 
-  return <ConvexProvider client={convex}>{app}</ConvexProvider>
+  return app
 }

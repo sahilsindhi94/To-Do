@@ -1,20 +1,13 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, useEffect, useMemo, useReducer } from 'react'
 import { useMutation, useQuery } from 'convex/react'
+import { useConvexAuth } from 'convex/react'
 import { api, hasConvexUrl } from '../convex/api'
 import { readTasks, writeTasks } from '../services/localTaskStore'
 
 const TaskContext = createContext(null)
-const ownerKeyStorageKey = 'momentum-owner-key'
 
-function getOwnerKey() {
-  if (typeof window === 'undefined') return 'server'
-  const existing = window.localStorage.getItem(ownerKeyStorageKey)
-  if (existing) return existing
-  const ownerKey = crypto.randomUUID()
-  window.localStorage.setItem(ownerKeyStorageKey, ownerKey)
-  return ownerKey
-}
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function sortTasks(tasks) {
   return [...tasks].sort((a, b) => {
@@ -46,9 +39,7 @@ function taskReducer(state, action) {
       ])
     case 'update':
       return state.map((task) =>
-        task.id === action.id
-          ? { ...task, ...action.payload, updatedAt: Date.now() }
-          : task
+        task.id === action.id ? { ...task, ...action.payload, updatedAt: Date.now() } : task
       )
     case 'delete':
       return state.filter((task) => task.id !== action.id)
@@ -65,67 +56,81 @@ function taskReducer(state, action) {
   }
 }
 
-// ─── Local (no Convex) provider ──────────────────────────────────────────────
+// ─── Local provider (no Convex URL) ──────────────────────────────────────────
 
 function LocalTaskProvider({ children }) {
   const [tasks, dispatch] = useReducer(taskReducer, undefined, readTasks)
 
-  useEffect(() => {
-    writeTasks(tasks)
-  }, [tasks])
+  useEffect(() => { writeTasks(tasks) }, [tasks])
 
   const value = useMemo(() => ({
     tasks: sortTasks(tasks),
     isLoading: false,
     ownerKey: 'local',
-    createTask:  async (payload) => dispatch({ type: 'create', payload }),
-    updateTask:  async (id, payload) => dispatch({ type: 'update', id, payload }),
-    deleteTask:  async (id) => dispatch({ type: 'delete', id }),
+    createTask:   async (payload) => dispatch({ type: 'create', payload }),
+    updateTask:   async (id, payload) => dispatch({ type: 'update', id, payload }),
+    deleteTask:   async (id) => dispatch({ type: 'delete', id }),
     reorderTasks: async (nextTasks) => dispatch({ type: 'reorder', payload: nextTasks }),
-    togglePin:   async (id) => dispatch({ type: 'toggle_pin', id }),
+    togglePin:    async (id) => dispatch({ type: 'toggle_pin', id }),
   }), [tasks])
 
   return <TaskContext.Provider value={value}>{children}</TaskContext.Provider>
 }
 
-// ─── Convex provider ─────────────────────────────────────────────────────────
+// ─── Convex provider (authenticated) ─────────────────────────────────────────
 
 function ConvexTaskProvider({ children }) {
-  const ownerKey = useMemo(getOwnerKey, [])
-  const tasks = useQuery(api.tasks.list, { ownerKey })
+  const { isAuthenticated, isLoading: authLoading } = useConvexAuth()
 
-  const createTaskMutation  = useMutation(api.tasks.create)
-  const updateTaskMutation  = useMutation(api.tasks.update)
-  const deleteTaskMutation  = useMutation(api.tasks.remove)
+  // Get the authenticated user's identity to use as ownerKey
+  const viewer = useQuery(
+    api.users.viewer,
+    isAuthenticated ? {} : 'skip'
+  )
+
+  // ownerKey = authenticated user's Convex _id (stable across all devices)
+  const ownerKey = viewer?._id ?? null
+
+  // Only query tasks once we have a valid ownerKey
+  const tasks = useQuery(
+    api.tasks.list,
+    ownerKey ? { ownerKey } : 'skip'
+  )
+
+  const createTaskMutation   = useMutation(api.tasks.create)
+  const updateTaskMutation   = useMutation(api.tasks.update)
+  const deleteTaskMutation   = useMutation(api.tasks.remove)
   const reorderTasksMutation = useMutation(api.tasks.reorder)
-  const togglePinMutation   = useMutation(api.tasks.togglePin)
+  const togglePinMutation    = useMutation(api.tasks.togglePin)
 
   const value = useMemo(() => ({
     tasks: sortTasks(tasks ?? []),
-    isLoading: tasks === undefined,
-    ownerKey,
+    isLoading: authLoading || tasks === undefined,
+    ownerKey: ownerKey ?? '',
 
     createTask: (payload) =>
-      createTaskMutation({ ownerKey, ...payload }),
+      createTaskMutation({ ownerKey: ownerKey ?? '', ...payload }),
 
     updateTask: (id, payload) => {
-      // Pass only defined fields — Convex rejects undefined values
       const clean = Object.fromEntries(
         Object.entries(payload).filter(([, v]) => v !== undefined)
       )
-      return updateTaskMutation({ ownerKey, id, ...clean })
+      return updateTaskMutation({ ownerKey: ownerKey ?? '', id, ...clean })
     },
 
-    deleteTask: (id) => deleteTaskMutation({ ownerKey, id }),
+    deleteTask: (id) =>
+      deleteTaskMutation({ ownerKey: ownerKey ?? '', id }),
 
     reorderTasks: (nextTasks) =>
       reorderTasksMutation({
-        ownerKey,
+        ownerKey: ownerKey ?? '',
         orderedIds: nextTasks.map((t) => t._id || t.id),
       }),
 
-    togglePin: (id) => togglePinMutation({ ownerKey, id }),
+    togglePin: (id) =>
+      togglePinMutation({ ownerKey: ownerKey ?? '', id }),
   }), [
+    authLoading,
     createTaskMutation,
     deleteTaskMutation,
     ownerKey,
